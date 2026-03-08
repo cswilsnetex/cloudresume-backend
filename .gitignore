@@ -1,0 +1,12 @@
+.env
+*.tmp
+
+# Azure Functions
+local.settings.json
+__pycache__/
+.python_packages/
+.venv/
+
+# Claude / AI
+.claude/
+CLAUDE.md

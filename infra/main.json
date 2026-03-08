@@ -1,0 +1,269 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "centralus",
+      "metadata": {
+        "description": "Azure region for all resources."
+      }
+    }
+  },
+  "variables": {
+    "cosmosAccountName": "cloudresumecswdb",
+    "cosmosTableName": "visitorcount",
+    "funcStorageName": "cloudresumefunc",
+    "webStorageName": "cloudresumeweb",
+    "appServicePlanName": "cloudresume-asp",
+    "functionAppName": "cloudresume-api",
+    "cdnProfileName": "cloudresume-cdn",
+    "cdnEndpointName": "cloudresume-endpoint",
+    "tags": {
+      "environment": "production",
+      "owner": "cswilson",
+      "cost-center": "cloudresume"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.DocumentDB/databaseAccounts",
+      "apiVersion": "2023-11-15",
+      "name": "[variables('cosmosAccountName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "kind": "GlobalDocumentDB",
+      "properties": {
+        "databaseAccountOfferType": "Standard",
+        "capabilities": [
+          {
+            "name": "EnableTable"
+          },
+          {
+            "name": "EnableServerless"
+          }
+        ],
+        "locations": [
+          {
+            "locationName": "[parameters('location')]",
+            "failoverPriority": 0
+          }
+        ],
+        "consistencyPolicy": {
+          "defaultConsistencyLevel": "Session"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.DocumentDB/databaseAccounts/tables",
+      "apiVersion": "2023-11-15",
+      "name": "[format('{0}/{1}', variables('cosmosAccountName'), variables('cosmosTableName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.DocumentDB/databaseAccounts', variables('cosmosAccountName'))]"
+      ],
+      "properties": {
+        "resource": {
+          "id": "[variables('cosmosTableName')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('funcStorageName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "supportsHttpsTrafficOnly": true,
+        "minimumTlsVersion": "TLS1_2",
+        "allowBlobPublicAccess": false
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('webStorageName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "supportsHttpsTrafficOnly": true,
+        "minimumTlsVersion": "TLS1_2",
+        "allowBlobPublicAccess": true
+      }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('appServicePlanName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "kind": "functionapp",
+      "sku": {
+        "name": "Y1",
+        "tier": "Dynamic"
+      },
+      "properties": {
+        "reserved": true
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('functionAppName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]",
+      "kind": "functionapp,linux",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('funcStorageName'))]",
+        "[resourceId('Microsoft.DocumentDB/databaseAccounts', variables('cosmosAccountName'))]"
+      ],
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('appServicePlanName'))]",
+        "httpsOnly": true,
+        "siteConfig": {
+          "linuxFxVersion": "Python|3.11",
+          "appSettings": [
+            {
+              "name": "AzureWebJobsStorage",
+              "value": "[format('DefaultEndpointsProtocol=https;AccountName={0};AccountKey={1};EndpointSuffix=core.windows.net', variables('funcStorageName'), listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('funcStorageName')), '2023-01-01').keys[0].value)]"
+            },
+            {
+              "name": "FUNCTIONS_EXTENSION_VERSION",
+              "value": "~4"
+            },
+            {
+              "name": "FUNCTIONS_WORKER_RUNTIME",
+              "value": "python"
+            },
+            {
+              "name": "AzureWebJobsFeatureFlags",
+              "value": "EnableWorkerIndexing"
+            },
+            {
+              "name": "CosmosDBConnectionString",
+              "value": "[listConnectionStrings(resourceId('Microsoft.DocumentDB/databaseAccounts', variables('cosmosAccountName')), '2023-11-15').connectionStrings[4].connectionString]"
+            },
+            {
+              "name": "CORS_ORIGIN",
+              "value": "https://cloudresume.n0csw.com"
+            },
+            {
+              "name": "WEBSITE_RUN_FROM_PACKAGE",
+              "value": "1"
+            }
+          ],
+          "cors": {
+            "allowedOrigins": [
+              "https://cloudresume.n0csw.com"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Cdn/profiles",
+      "apiVersion": "2024-02-01",
+      "name": "[variables('cdnProfileName')]",
+      "location": "global",
+      "tags": "[variables('tags')]",
+      "sku": {
+        "name": "Standard_AzureFrontDoor"
+      }
+    },
+    {
+      "type": "Microsoft.Cdn/profiles/afdEndpoints",
+      "apiVersion": "2024-02-01",
+      "name": "[format('{0}/{1}', variables('cdnProfileName'), variables('cdnEndpointName'))]",
+      "location": "global",
+      "tags": "[variables('tags')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Cdn/profiles', variables('cdnProfileName'))]"
+      ],
+      "properties": {
+        "enabledState": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.Cdn/profiles/originGroups",
+      "apiVersion": "2024-02-01",
+      "name": "[format('{0}/default-origin-group', variables('cdnProfileName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Cdn/profiles', variables('cdnProfileName'))]"
+      ],
+      "properties": {
+        "loadBalancingSettings": {
+          "sampleSize": 4,
+          "successfulSamplesRequired": 3
+        },
+        "healthProbeSettings": {
+          "probePath": "/",
+          "probeRequestType": "HEAD",
+          "probeProtocol": "Https",
+          "probeIntervalInSeconds": 100
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Cdn/profiles/originGroups/origins",
+      "apiVersion": "2024-02-01",
+      "name": "[format('{0}/default-origin-group/cloudresumeweb-origin', variables('cdnProfileName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Cdn/profiles/originGroups', variables('cdnProfileName'), 'default-origin-group')]"
+      ],
+      "properties": {
+        "hostName": "[format('{0}.z19.web.core.windows.net', variables('webStorageName'))]",
+        "originHostHeader": "[format('{0}.z19.web.core.windows.net', variables('webStorageName'))]",
+        "httpPort": 80,
+        "httpsPort": 443,
+        "priority": 1,
+        "weight": 1000
+      }
+    },
+    {
+      "type": "Microsoft.Cdn/profiles/afdEndpoints/routes",
+      "apiVersion": "2024-02-01",
+      "name": "[format('{0}/{1}/default-route', variables('cdnProfileName'), variables('cdnEndpointName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Cdn/profiles/afdEndpoints', variables('cdnProfileName'), variables('cdnEndpointName'))]",
+        "[resourceId('Microsoft.Cdn/profiles/originGroups/origins', variables('cdnProfileName'), 'default-origin-group', 'cloudresumeweb-origin')]"
+      ],
+      "properties": {
+        "originGroup": {
+          "id": "[resourceId('Microsoft.Cdn/profiles/originGroups', variables('cdnProfileName'), 'default-origin-group')]"
+        },
+        "supportedProtocols": ["Http", "Https"],
+        "patternsToMatch": ["/*"],
+        "forwardingProtocol": "HttpsOnly",
+        "linkToDefaultDomain": "Enabled",
+        "httpsRedirect": "Enabled"
+      }
+    }
+  ],
+  "outputs": {
+    "cosmosDbAccountName": {
+      "type": "string",
+      "value": "[variables('cosmosAccountName')]"
+    },
+    "functionAppHostName": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Web/sites', variables('functionAppName'))).defaultHostName]"
+    },
+    "cdnEndpointHostName": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Cdn/profiles/afdEndpoints', variables('cdnProfileName'), variables('cdnEndpointName'))).hostName]"
+    },
+    "staticWebsiteEndpoint": {
+      "type": "string",
+      "value": "[format('https://{0}.z19.web.core.windows.net', variables('webStorageName'))]"
+    }
+  }
+}
